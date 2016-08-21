@@ -321,7 +321,7 @@ open_levels(Dir, Options) ->
     %% Do enough incremental merge to be sure we won't deadlock in insert
     {TopLevel, MaxMerge} =
         lists:foldl(fun(LevelNo, {NextLevel, MergeWork0}) ->
-                            {ok, Level} = hanoidb_level:open(Dir, LevelNo, NextLevel, Options, self()),
+                            {ok, Level} = hanoidb_level:open(Dir, LevelNo, NextLevel, Options, self(), self()),
                             MergeWork = MergeWork0 + hanoidb_level:unmerged_count(Level),
                             {Level, MergeWork}
                     end,

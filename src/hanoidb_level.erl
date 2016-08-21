@@ -44,13 +44,13 @@
 -behavior(plain_fsm).
 -export([data_vsn/0, code_change/3]).
 
--export([open/5, lookup/2, lookup/3, inject/2, close/1, snapshot_range/3, blocking_range/3,
+-export([open/6, lookup/2, lookup/3, inject/2, close/1, snapshot_range/3, blocking_range/3,
          begin_incremental_merge/2, await_incremental_merge/1, set_max_level/2,
          unmerged_count/1, destroy/1, level/1]).
 
 -include_lib("kernel/include/file.hrl").
 
--record(state, {
+-record(state, { root,
           a, b, c, next, dir, level, inject_done_ref, merge_pid, folding = [],
           step_next_ref, step_caller, step_merge_ref,
           opts = [], owner, work_in_progress=0, work_done=0, max_level=?TOP_LEVEL
@@ -78,14 +78,14 @@ debug_log(State,Fmt,Args) ->
 
 %%%%% PUBLIC OPERATIONS
 
-open(Dir,Level,Next,Opts,Owner) when Level>0 ->
+open(Dir,Level,Next,Opts,Owner, Root) when Level>0 ->
     hanoidb_util:ensure_expiry(Opts),
     SpawnOpt = hanoidb:get_opt(spawn_opt, Opts, []),
     PID = plain_fsm:spawn_opt(?MODULE,
                               fun() ->
                                       process_flag(trap_exit,true),
                                       link(Owner),
-                                      initialize(#state{dir=Dir,level=Level,next=Next,opts=Opts,owner=Owner})
+                                      initialize(#state{dir=Dir,level=Level,next=Next,opts=Opts,owner=Owner, root=Root})
                               end,
                               SpawnOpt),
     {ok, PID}.
@@ -312,7 +312,7 @@ main_loop(State = #state{ next=Next }) ->
             end,
 
             plain_rpc:send_reply(From, ok),
-
+            try
             case hanoidb_reader:open(ToFileName, [random|State#state.opts]) of
                 {ok, BT} ->
                     if SetPos == #state.b ->
@@ -321,7 +321,10 @@ main_loop(State = #state{ next=Next }) ->
                             main_loop(setelement(SetPos, State, BT))
                     end;
                 E2  -> ?log("open failed ~p :: ~p~n", [ToFileName, E2]),
-                       error(E2)
+                       exit(State#state.root, reader)
+            end
+            catch
+                 _Class:Ex -> exit(State#state.root, Ex)
             end;
 
 
@@ -599,7 +602,7 @@ main_loop(State = #state{ next=Next }) ->
             State1 =
                 if Next =:= undefined ->
                         {ok, PID} = ?MODULE:open(State#state.dir, State#state.level + 1, undefined,
-                                                 State#state.opts, State#state.owner ),
+                                                 State#state.opts, State#state.owner, State#state.root ),
                         State#state.owner ! { bottom_level, State#state.level + 1 },
                         State#state{ next=PID, max_level= State#state.level+1 };
                    true ->
@@ -778,6 +781,7 @@ restart_merge_then_loop(State, Reason) ->
     XFileName = filename("X",State),
     error_logger:warning_msg("Merger appears to have failed (reason: ~p). Removing outfile ~s\n", [Reason, XFileName]),
     file:delete(XFileName),
+    exit(State#state.root, merge),
     check_begin_merge_then_loop(State).
 
 begin_merge(State) ->
